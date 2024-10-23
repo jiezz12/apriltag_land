@@ -1,0 +1,6 @@
+<?xml version="1.0"?>
+<launch>
+  <node pkg="apriltag_land" name="apriltag_land" type="land_node" output="screen"/>
+  		　<rosparam file="$(find apriltag_land)/config/config.yaml" command="load"/> 
+</launch>
+
