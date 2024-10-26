@@ -60,9 +60,9 @@ void rcin_cb(const mavros_msgs::RCIn::ConstPtr& msg)
 	{
 		vx = abs(msg->channels[1]  - value2) * 1.00 / abs(value0 - value2) * 1  -0.5; 
 		vy = abs(msg->channels[3]  - value5) * 1.00/ abs(value5 - value3) * 1  -0.5; 
-		ROS_INFO("vx=%f,vy:%f",vx,vy);
 		if(abs(msg->channels[1] - value1) < 50) vx = 0;
 		if(abs(msg->channels[3] - value5) < 50) vy = 0;
+				ROS_INFO("vx=%f,vy:%f",vx,vy);
 
 		double rotation_angle = ( angle1 ) * (M_PI / 180.0);
     	tf::Quaternion q;
