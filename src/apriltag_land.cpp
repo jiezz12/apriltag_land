@@ -17,15 +17,19 @@ using namespace std;
 // #define HIGHT	5		//初始飞行高度 m
 // #define vel_z 0.3
 
-bool marker_found = false,flag_move = false;
+bool marker_found = false,flag_land = false;
 std::vector<int> current_target_id (1);  //定义一个值为零的向量
 char mode;
 double init_x_take_off =0, init_y_take_off =0, init_z_take_off =0;
 float detec_x = 0, detec_y = 0, detec_z = 0;
 double angle1 = 0,roll,pitch,yaw = 0,target_yaw = 0, diff_angle = 0, err_yaw = 0,err_yaw0 = 0, err_yaw_err = 0;
+double err_I_lim = 100,errx_Now = 0,errx_old_Last = 0,errx_old_LLast = 0,erry_Now = 0,erry_old_Last = 0,erry_old_LLast = 0,errx_p,errx_i = 0,errx_d,erry_p,erry_i = 0,erry_d,CtrOutx,CtrOuty;//PID
+double x_xz,y_xz;
+
+int x_err = 0,y_err = 0 ;
+double vel_z,cam_angle, MIN_ERROR, HIGHT, vel_lit,Kp,Ki,Kd;
 int value0,value1,value2,value3,value4,value5;
-int HIGHT = 0,x_err = 0,y_err = 0 ;
-double vel_z,cam_angle, Kp,MIN_ERROR;
+double x_move , y_move;
 
 mavros_msgs::State current_state;
 mavros_msgs::PositionTarget setpoint; // 位置速度控制消息类
@@ -56,13 +60,13 @@ void yaw_cb(sensor_msgs::Imu msg)
 void rcin_cb(const mavros_msgs::RCIn::ConstPtr& msg)
 {
 	double vx,vy;
-	if(!marker_found & mode == 'm')
+	if(!marker_found && mode == 'm')
 	{
 		vx = abs(msg->channels[1]  - value2) * 1.00 / abs(value0 - value2) * 1  -0.5; 
 		vy = abs(msg->channels[3]  - value5) * 1.00/ abs(value5 - value3) * 1  -0.5; 
 		if(abs(msg->channels[1] - value1) < 50) vx = 0;
 		if(abs(msg->channels[3] - value5) < 50) vy = 0;
-				ROS_INFO("vx=%f,vy:%f",vx,vy);
+				//ROS_INFO("vx=%f,vy:%f",vx,vy);
 
 		double rotation_angle = ( angle1 ) * (M_PI / 180.0);
     	tf::Quaternion q;
@@ -72,8 +76,8 @@ void rcin_cb(const mavros_msgs::RCIn::ConstPtr& msg)
 		tf::Matrix3x3 rotation_matrix(q);
 		tf::Vector3 rotated_point = rotation_matrix * point;
 
-		setpoint.velocity.x = rotated_point.x();
-		setpoint.velocity.y = rotated_point.y();
+		//setpoint.velocity.x = rotated_point.x();
+		//setpoint.velocity.y = rotated_point.y();
 	}
 }
 apriltag_ros::AprilTagDetection marker;
@@ -101,9 +105,48 @@ void apriltag_cb(const apriltag_ros::AprilTagDetectionArray::ConstPtr &msg)
 	}
 
 }
-void pos_xz(float x,float y)
+void vel_pid(double xa,double ya)
 {
-	double vx,vy;
+	errx_Now = xa ;
+	errx_p = errx_Now;
+	errx_i = errx_Now + errx_i;
+	errx_d = errx_Now - errx_old_Last + errx_old_Last - errx_old_LLast;
+	erry_Now = ya ;
+	erry_p = erry_Now;
+	erry_i = erry_Now + erry_i;
+	erry_d = erry_Now - erry_old_Last + erry_old_Last - erry_old_LLast;
+
+	errx_old_LLast = errx_old_Last;
+	errx_old_Last = errx_Now;
+	erry_old_LLast = erry_old_Last;
+	erry_old_Last = erry_Now;	
+
+	//积分限幅
+	if(errx_i > err_I_lim)	errx_i = err_I_lim;		
+	if(errx_i < -err_I_lim)	errx_i = -err_I_lim;
+	if(erry_i > err_I_lim)	erry_i = err_I_lim;		
+	if(erry_i < -err_I_lim)	erry_i = -err_I_lim;
+
+	CtrOutx = errx_p*Kp + errx_i*Ki + errx_d*Kd;
+	CtrOuty = erry_p*Kp + erry_i*Ki + erry_d*Kd;
+}
+void pos_xz(double x,double y,double z)
+{
+	double rotation_angle = angle1* (M_PI / 180.0);
+    tf::Quaternion q;
+	q.setRPY(0, 0, rotation_angle);
+
+	tf::Vector3 point(x,y,z);
+	tf::Matrix3x3 rotation_matrix(q);
+	tf::Vector3 rotated_point = rotation_matrix * point;
+
+	x_xz = rotated_point.x();
+	y_xz = rotated_point.y();
+
+}
+
+void vel_xz(float x,float y)
+{
 	double rotation_angle = ( angle1 ) * (M_PI / 180.0);
     tf::Quaternion q;
 	q.setRPY(0, 0, rotation_angle);
@@ -112,25 +155,28 @@ void pos_xz(float x,float y)
 	tf::Matrix3x3 rotation_matrix(q);
 	tf::Vector3 rotated_point = rotation_matrix * point;
 
-	ROS_INFO("vel_x:%f,vel_y:%f",rotated_point.x(),rotated_point.y());
-	vx = Kp *  rotated_point.x() ;
-	vy = Kp *  rotated_point.y() ;
-	if(vx > 0.5) vx = 0.5;
-	if(vx < -0.5) vx = -0.5;
-	if(vy > 0.5) vy = 0.5;
-	if(vy < -0.5) vy = -0.5;
+	vel_pid(rotated_point.x(),rotated_point.y());
+	//vx = Kp *  rotated_point.x() ;
+	//vy = Kp *  rotated_point.y() ;
 
-	setpoint.velocity.x = vx;
-	setpoint.velocity.y = vy;
+	if(CtrOutx> vel_lit) CtrOutx =vel_lit;
+	if(CtrOutx < -vel_lit) CtrOutx = -vel_lit;
+	if(CtrOuty > vel_lit) CtrOuty = vel_lit;
+	if(CtrOuty < -vel_lit) CtrOuty = -vel_lit;
+
+	ROS_INFO("vel_x:%f,vel_y:%f",CtrOutx,CtrOuty);
+
+	setpoint.velocity.x = CtrOutx;
+	setpoint.velocity.y = CtrOuty;
 }
 void cam_xz(float xa,float ya)
 {
 	double xb,yb;
-  	xb = xa * cos(cam_angle * (M_PI / 180.0) ) - ya * sin(cam_angle * (M_PI / 180.0));
-   	yb =  - xa * sin(cam_angle * (M_PI / 180.0)) - ya * cos(cam_angle * (M_PI / 180.0));
+  	xb = xa * cos(cam_angle * (M_PI / 180.0) ) - ya * sin(cam_angle * (M_PI / 180.0)); //这里转换Y轴
+   	yb =  - xa * sin(cam_angle * (M_PI / 180.0)) - ya * cos(cam_angle * (M_PI / 180.0)); 
 
-	ROS_INFO("x_xz:%f,y_xz:%f",xb,yb);
-    pos_xz(xb,yb);
+	//ROS_INFO("x_xz:%f,y_xz:%f",xb,yb);
+    vel_xz(xb,yb);
 }
 
 
@@ -158,6 +204,11 @@ int main(int argc, char *argv[])
 	nh.getParam("/cam/y_err",y_err);
 	nh.getParam("/cam/R",cam_angle);
 	nh.getParam("Kp",Kp);
+	nh.getParam("Ki",Ki);
+	nh.getParam("Kd",Kd);
+	nh.getParam("vel_lit",vel_lit);
+	nh.getParam("x_move",x_move);
+	nh.getParam("y_move",y_move);
 	nh.getParam("MIN_ERROR",MIN_ERROR);
 	nh.getParam("/channle1/value0",value0);
 	nh.getParam("/channle1/value1",value1);
@@ -167,7 +218,8 @@ int main(int argc, char *argv[])
 	nh.getParam("/channle2/value5",value5);
 
 	ROS_INFO("x_err:%d,y_err:%d",x_err,y_err);
-	ROS_INFO("HIGHT:%d,vel_z:%f,R:%f",HIGHT,vel_z,cam_angle);
+	ROS_INFO("HIGHT:%f,vel_z:%f,R:%f",HIGHT,vel_z,cam_angle);
+	ROS_INFO("kp:%f,ki:%f,kd:%f,x:%f,y:%f",Kp,Ki,Kd,x_move,y_move);
 
     while(ros::ok() && !current_state.connected){
     ros::spinOnce();
@@ -211,6 +263,7 @@ int main(int argc, char *argv[])
 	arm_cmd.request.value = true;
 	
 	ros::Time last_request = ros::Time::now();
+	ros::Time detec_time = ros::Time::now();
 
     mode = 't';
 	int sametimes = 0;
@@ -255,46 +308,67 @@ int main(int argc, char *argv[])
 					{	
 						if (sametimes > 10)
               			{
-         		           mode = 'm';
+         		           mode = 'p';
 							last_request = ros::Time::now();
                     	}
             			else sametimes++;
                 		}
 						else sametimes = 0;
 	 	            break;
+					case 'p':
+						pos_xz(x_move,y_move,init_z_take_off + HIGHT);
+						setpoint.position.x = init_x_take_off + x_xz;
+						setpoint.position.y = init_y_take_off + y_xz;
+						//setpoint.position.z = init_z_take_off + HIGHT;
+						if(marker_found)
+						{
+							mode = 'm';
+							detec_time =  ros::Time::now();
+						}
+						if(local_pos.pose.position.x > init_x_take_off + x_xz - 0.1 && local_pos.pose.position.x < init_x_take_off + x_xz + 0.1 &&
+							 local_pos.pose.position.y > init_y_take_off +y_xz - 0.1 && local_pos.pose.position.y < init_y_take_off +y_xz + 0.1)
+						{
+							mode = 'm';
+							detec_time =  ros::Time::now();
+						}
+						break;
 					case 'm':
-							setpoint.type_mask =			//使用速度控制
-							mavros_msgs::PositionTarget::IGNORE_PX |
-							mavros_msgs::PositionTarget::IGNORE_PY |
-							mavros_msgs::PositionTarget::IGNORE_PZ |
-							//mavros_msgs::PositionTarget::IGNORE_VX |
-							//mavros_msgs::PositionTarget::IGNORE_VY |
-							//mavros_msgs::PositionTarget::IGNORE_VZ |
-							mavros_msgs::PositionTarget::IGNORE_AFX |
-							mavros_msgs::PositionTarget::IGNORE_AFY |
-							mavros_msgs::PositionTarget::IGNORE_AFZ |
-							mavros_msgs::PositionTarget::FORCE |
-							mavros_msgs::PositionTarget::IGNORE_YAW ;
-							//mavros_msgs::PositionTarget::IGNORE_YAW_RATE;
-
+							ROS_INFO("start!");
 							if(marker_found)
-								{
+								{	
+									setpoint.type_mask =			//使用速度控制
+										mavros_msgs::PositionTarget::IGNORE_PX |
+										mavros_msgs::PositionTarget::IGNORE_PY |
+										mavros_msgs::PositionTarget::IGNORE_PZ |
+										//mavros_msgs::PositionTarget::IGNORE_VX |
+										//mavros_msgs::PositionTarget::IGNORE_VY |
+										//mavros_msgs::PositionTarget::IGNORE_VZ |
+										mavros_msgs::PositionTarget::IGNORE_AFX |
+										mavros_msgs::PositionTarget::IGNORE_AFY |
+										mavros_msgs::PositionTarget::IGNORE_AFZ |
+										mavros_msgs::PositionTarget::FORCE |
+										mavros_msgs::PositionTarget::IGNORE_YAW ;
+										//mavros_msgs::PositionTarget::IGNORE_YAW_RATE;
+										
 									cam_xz(detec_x,detec_y );
 									setpoint.velocity.z = -vel_z;
-									if(abs(detec_x) < MIN_ERROR && abs(detec_y) < MIN_ERROR)
-									{
-										setpoint.velocity.x = 0;
-										setpoint.velocity.y = 0;
-									}
-								}
-								else
+									// if(abs(detec_x) < MIN_ERROR && abs(detec_y) < MIN_ERROR)
+									// {
+									// 	setpoint.velocity.x = 0;
+									// 	setpoint.velocity.y = 0;
+									// }
+									flag_land = true;
+									detec_time =  ros::Time::now();
+								}else
 								{
-									setpoint.velocity.x = 0;
-									setpoint.velocity.y = 0;
-									setpoint.velocity.z = 0;
+										if(ros::Time::now() - detec_time  > ros::Duration(15.0) )
+										{
+											mode = 'l';
+											last_request = ros::Time::now();
+										}
+										setpoint.velocity.z = 0;
 								}
-
-							if(local_pos.pose.position.z  < init_z_take_off + 0.3)
+							if(local_pos.pose.position.z  < init_z_take_off + 0.3 && flag_land == true)
 							{
 								mode = 'l';
 								last_request = ros::Time::now();
@@ -302,7 +376,7 @@ int main(int argc, char *argv[])
 							break;
 						case 'l':
 							offb_set_mode.request.custom_mode = "AUTO.LAND";
-							if (current_state.mode != "AUTO.LAND" && (ros::Time::now() - last_request > ros::Duration(5.0)))
+							if (current_state.mode != "AUTO.LAND" && (ros::Time::now() - last_request > ros::Duration(1.0)))
 							{
 								if (set_mode_client.call(offb_set_mode) && offb_set_mode.response.mode_sent)
 								{
@@ -319,7 +393,7 @@ int main(int argc, char *argv[])
 		err_yaw = target_yaw - yaw;
 		err_yaw_err =err_yaw - err_yaw0;
 		err_yaw0 = err_yaw;
-		diff_angle = 0.8 * err_yaw + 0.002 * err_yaw_err;
+		diff_angle = 0.01 * err_yaw + 0.002 * err_yaw_err;
 		setpoint.yaw_rate = diff_angle ;
 
 		setpoint_pub.publish(setpoint);
