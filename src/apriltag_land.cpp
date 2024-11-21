@@ -26,10 +26,11 @@ double angle1 = 0,roll,pitch,yaw = 0,target_yaw = 0, diff_angle = 0, err_yaw = 0
 double err_I_lim = 100,errx_Now = 0,errx_old_Last = 0,errx_old_LLast = 0,erry_Now = 0,erry_old_Last = 0,erry_old_LLast = 0,errx_p,errx_i = 0,errx_d,erry_p,erry_i = 0,erry_d,CtrOutx,CtrOuty;//PID
 double x_xz,y_xz;
 
-int x_err = 0,y_err = 0 ;
+int x_err = 0,y_err = 0,land_mode ;
 double vel_z,cam_angle, MIN_ERROR, HIGHT, vel_lit,Kp,Ki,Kd;
 int value0,value1,value2,value3,value4,value5;
-double x_move , y_move;
+double x_move , y_move,z_err;
+
 
 mavros_msgs::State current_state;
 mavros_msgs::PositionTarget setpoint; // 位置速度控制消息类
@@ -209,6 +210,8 @@ int main(int argc, char *argv[])
 	nh.getParam("vel_lit",vel_lit);
 	nh.getParam("x_move",x_move);
 	nh.getParam("y_move",y_move);
+	nh.getParam("z_err",z_err);
+	nh.getParam("land_mode",land_mode);
 	nh.getParam("MIN_ERROR",MIN_ERROR);
 	nh.getParam("/channle1/value0",value0);
 	nh.getParam("/channle1/value1",value1);
@@ -216,6 +219,8 @@ int main(int argc, char *argv[])
 	nh.getParam("/channle2/value3",value3);
 	nh.getParam("/channle2/value4",value4);
 	nh.getParam("/channle2/value5",value5);
+
+
 
 	ROS_INFO("x_err:%d,y_err:%d",x_err,y_err);
 	ROS_INFO("HIGHT:%f,vel_z:%f,R:%f",HIGHT,vel_z,cam_angle);
@@ -333,7 +338,7 @@ int main(int argc, char *argv[])
 						}
 						break;
 					case 'm':
-							ROS_INFO("start!");
+							//ROS_INFO("start!");
 							if(marker_found)
 								{	
 									setpoint.type_mask =			//使用速度控制
@@ -368,7 +373,8 @@ int main(int argc, char *argv[])
 										}
 										setpoint.velocity.z = 0;
 								}
-							if(local_pos.pose.position.z  < init_z_take_off + 0.3 && flag_land == true)
+							if( local_pos.pose.position.z  < init_z_take_off + z_err +  1.5&& land_mode == 1) setpoint.velocity.z = 0;
+							if(local_pos.pose.position.z  < init_z_take_off + z_err +  0.3 && flag_land == true && land_mode == 0)
 							{
 								mode = 'l';
 								last_request = ros::Time::now();
@@ -376,7 +382,7 @@ int main(int argc, char *argv[])
 							break;
 						case 'l':
 							offb_set_mode.request.custom_mode = "AUTO.LAND";
-							if (current_state.mode != "AUTO.LAND" && (ros::Time::now() - last_request > ros::Duration(1.0)))
+							if (current_state.mode != "AUTO.LAND" && (ros::Time::now() - last_request > ros::Duration(5.0)))
 							{
 								if (set_mode_client.call(offb_set_mode) && offb_set_mode.response.mode_sent)
 								{
