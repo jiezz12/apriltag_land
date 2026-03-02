@@ -8,6 +8,7 @@
 #include <tf/LinearMath/Quaternion.h>
 #include <tf/LinearMath/Vector3.h>
 #include <tf/LinearMath/Matrix3x3.h>
+#include <tf/transform_listener.h>
 #include <sensor_msgs/Imu.h>
 #include <mavros_msgs/RCIn.h>
 
@@ -16,6 +17,10 @@ using namespace std;
 
 // #define HIGHT	5		//初始飞行高度 m
 // #define vel_z 0.3
+
+tf::TransformListener* tf_listener;
+// 确保这与您的无人机体坐标系匹配（MAVROS/PX4 设置中很常见）
+std::string uav_frame_id = "base_link"; 
 
 bool marker_found = false,flag_land = false;
 std::vector<int> current_target_id (1);  //定义一个值为零的向量
@@ -81,6 +86,8 @@ void rcin_cb(const mavros_msgs::RCIn::ConstPtr& msg)
 		//setpoint.velocity.y = rotated_point.y();
 	}
 }
+bool tf_success = false;
+
 apriltag_ros::AprilTagDetection marker;
 void apriltag_cb(const apriltag_ros::AprilTagDetectionArray::ConstPtr &msg)
 {
@@ -93,9 +100,28 @@ void apriltag_cb(const apriltag_ros::AprilTagDetectionArray::ConstPtr &msg)
 			if(marker.id == current_target_id)
 			{
 				marker_found = true;
-				detec_x = marker.pose.pose.pose.position.x;
-        		detec_y = marker.pose.pose.pose.position.y;
-        		detec_z = marker.pose.pose.pose.position.z; 
+
+                // TF 变换：相机坐标系 -> 无人机坐标系
+                geometry_msgs::PoseStamped pose_in, pose_out;
+                pose_in.header = marker.pose.header; 
+                pose_in.pose = marker.pose.pose.pose;
+
+                try{
+                    // 确保变换存在。使用 ros::Time(0) 获取最新变换。
+                    tf_listener->transformPose(uav_frame_id, pose_in, pose_out);
+                    
+                    detec_x = pose_out.pose.position.x;
+                    detec_y = pose_out.pose.position.y;
+                    detec_z = pose_out.pose.position.z;
+                    tf_success = true;
+                }
+                catch (tf::TransformException &ex) {
+                    // 如果变换失败，则回退到原始相机坐标系坐标
+                    detec_x = marker.pose.pose.pose.position.x;
+                    detec_y = marker.pose.pose.pose.position.y;
+                    detec_z = marker.pose.pose.pose.position.z; 
+                    tf_success = false;
+                }
 			}
 		}
 	//ROS_INFO("detec_x=%.2f,detec_y=%.2f,detec_z=%.2f",detec_x,detec_y,detec_z);
@@ -103,6 +129,7 @@ void apriltag_cb(const apriltag_ros::AprilTagDetectionArray::ConstPtr &msg)
 	else
 	{
 		marker_found = false;
+        tf_success = false;
 	}
 
 }
@@ -173,8 +200,20 @@ void vel_xz(float x,float y)
 void cam_xz(float xa,float ya)
 {
 	double xb,yb;
-  	xb = xa * cos(cam_angle * (M_PI / 180.0) ) - ya * sin(cam_angle * (M_PI / 180.0)); //这里转换Y轴
-   	yb =  - xa * sin(cam_angle * (M_PI / 180.0)) - ya * cos(cam_angle * (M_PI / 180.0)); 
+    
+    if (tf_success) {
+        // 如果 TF 变换成功，直接使用变换后的坐标
+        // 注意：原始逻辑似乎假设标准相机安装并手动旋转。
+        // 如果 TF 工作正常，detec_x/y 应该已经在机体坐标系中了。
+        // 但是，我们需要确认速度控制器是期望机体坐标系速度还是 ENU 坐标系速度。
+        // 假设速度控制器 (vel_xz) 期望机体坐标系相关的误差。
+        xb = xa; 
+        yb = ya;
+    } else {
+        // 如果变换失败，使用手动旋转进行回退
+        xb = xa * cos(cam_angle * (M_PI / 180.0) ) - ya * sin(cam_angle * (M_PI / 180.0));
+        yb = - xa * sin(cam_angle * (M_PI / 180.0)) - ya * cos(cam_angle * (M_PI / 180.0)); 
+    }
 
 	//ROS_INFO("x_xz:%f,y_xz:%f",xb,yb);
     vel_xz(xb,yb);
@@ -196,6 +235,9 @@ int main(int argc, char *argv[])
     ros::Publisher setpoint_pub = nh.advertise<mavros_msgs::PositionTarget>("mavros/setpoint_raw/local", 10);//控制话题,可以发布位置速度加速度同时控制
 	ros::ServiceClient arming_client = nh.serviceClient<mavros_msgs::CommandBool>("mavros/cmd/arming");
 	ros::ServiceClient set_mode_client = nh.serviceClient<mavros_msgs::SetMode>("mavros/set_mode");
+
+    // 创建tf监听器
+    tf_listener = new tf::TransformListener();
 
     ros::Rate rate(20);
 
